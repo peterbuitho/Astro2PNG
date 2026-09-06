@@ -18,5 +18,20 @@ jobs:
           version: 0.16.0
       - run: zig build test --summary all
       - run: zig fmt --check src build.zig
-      - name: Cross-compile every target
+      - name: Cross-compile every CLI target
         run: zig build release -Dversion=ci --summary all
+
+  gui:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: GUI build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxext-dev libwayland-dev libxkbcommon-dev libgl1-mesa-dev
+      - name: Build the desktop GUI
+        run: zig build -Dgui -Doptimize=ReleaseFast --summary all

@@ -30,8 +30,10 @@ This is an in-progress port. What works today:
 | SIMBAD / CDS Sesame online object lookup (HTTPS via Zig std, per-run cache) | ✅ |
 | Caldwell catalogue + ~200 curated nicknames | ✅ |
 | Two-line label composition, header/file-name cross-check, off-centre & paired-object notes, cone-search identification of unnamed frames | ✅ |
+| Desktop GUI (dvui + SDL3): form, options, worker thread, streaming log, progress, Cancel | ✅ builds & runs on Windows / macOS / Linux |
+| GUI: Windows Explorer right-click / Linux `.desktop` integration | ✅ (registry / XDG) |
+| GUI: drag-and-drop onto the window; single-instance file hand-off | ⬜ not ported yet |
 | User names file (`XISF2PNG_NAMES`, per-user config) | ⬜ not ported yet |
-| Desktop GUI | ⬜ not ported yet (see note below) |
 | Windows Explorer / Linux desktop right-click integration | ⬜ not ported yet |
 
 ### Roadmap
@@ -39,11 +41,9 @@ This is an in-progress port. What works today:
 1. ~~`ttf.zig` — TrueType rasteriser + corner stamp.~~ ✅
 2. ~~`catalog.zig` + `lookup.zig` + `resolver.zig` — Caldwell table, curated
    nicknames, CDS Sesame / SIMBAD TAP queries, the full `identify` logic.~~ ✅
-3. User names file; macOS `.app` bundle in the release workflow.
-4. Desktop GUI. Zig has no mature pure-Zig windowing + GPU stack, so the GUI
-   will use one small C dependency (SDL or GLFW) under a Zig UI layer
-   ([`dvui`](https://github.com/david-vanderson/dvui) is the leading
-   candidate). The conversion engine (`src/root.zig`) is already GUI-ready.
+3. ~~Desktop GUI — dvui + SDL3.~~ ✅ (SDL is the one C dependency; it is built
+   from source as a lazy Zig dependency and only pulled in for `-Dgui`.)
+4. GUI drag-and-drop + single-instance hand-off; user names file; polish.
 
 ## Build from source
 
@@ -56,6 +56,18 @@ zig build -Doptimize=ReleaseFast
 zig build run -- --help
 zig build test            # unit tests
 ```
+
+The desktop GUI is opt-in (it links SDL3, built from source as a lazy
+dependency — no system SDL needed):
+
+```
+zig build -Dgui           # -> zig-out/bin/astro2png-gui
+zig build run-gui
+```
+
+On Linux the GUI build needs a few X11/Wayland/GL development headers
+(`libx11-dev libxext-dev libwayland-dev libxkbcommon-dev libgl1-mesa-dev` on
+Debian/Ubuntu).
 
 Cross-compile every release target into `zig-out/release/<triple>/`:
 

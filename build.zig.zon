@@ -3,7 +3,12 @@
     .version = "0.1.0",
     .fingerprint = 0xf84c85d5a5a7613d, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .dvui = .{
+            .url = "git+https://github.com/david-vanderson/dvui#4752f678b1499e6611084f6285de15639344f2a8",
+            .hash = "dvui-0.5.0-dev-AQFJmTZcAwFBUi0qoGoXznsjMpp7URpf246XhBINB-o4",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

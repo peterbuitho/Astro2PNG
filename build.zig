@@ -25,6 +25,35 @@ pub fn build(b: *std.Build) void {
     const run_engine_tests = b.addRunArtifact(engine_tests);
     b.step("test", "Run unit tests").dependOn(&run_engine_tests.step);
 
+    // --- Desktop GUI (opt-in: -Dgui) ----------------------------------
+    // Uses dvui with the SDL3 backend (SDL is built from source as a lazy
+    // dependency, so no system libraries are needed). The CLI build above
+    // never touches this.
+    const want_gui = b.option(bool, "gui", "Also build the desktop GUI (astro2png-gui)") orelse false;
+    if (want_gui) {
+        const dvui_dep = b.dependency("dvui", .{ .target = target, .optimize = optimize, .backend = .sdl3 });
+        const gui = b.addExecutable(.{
+            .name = "astro2png-gui",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/gui/main.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "astro2png", .module = ctx.engine(target, optimize) },
+                    .{ .name = "dvui", .module = dvui_dep.module("dvui_sdl3") },
+                    .{ .name = "sdl-backend", .module = dvui_dep.module("sdl3") },
+                },
+            }),
+        });
+        gui.root_module.addAnonymousImport("icon_png", .{ .root_source_file = b.path("assets/icon-256.png") });
+        b.installArtifact(gui);
+
+        const run_gui = b.addRunArtifact(gui);
+        run_gui.step.dependOn(b.getInstallStep());
+        if (b.args) |args| run_gui.addArgs(args);
+        b.step("run-gui", "Build and run the desktop GUI").dependOn(&run_gui.step);
+    }
+
     // --- Cross-platform release archives -------------------------------
     // A pure-Zig CLI cross-compiles from one runner, so a single job emits
     // every platform's binary into zig-out/release/<triple>/.
