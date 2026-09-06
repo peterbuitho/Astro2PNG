@@ -119,7 +119,7 @@ pub const App = struct {
             var pad = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal, .margin = dvui.Rect.all(10) });
             defer pad.deinit();
 
-            dvui.label(@src(), "XISF / FITS \u{2192} PNG batch converter", .{}, .{ .font = .theme(.title) });
+            dvui.label(@src(), "XISF / FITS to PNG batch converter", .{}, .{ .font = .theme(.title) });
             _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 0, .h = 6 } });
 
             const running = self.job != null;
@@ -131,11 +131,26 @@ pub const App = struct {
                 defer dis.deinit();
 
                 if (file_mode) {
-                    var hb = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
-                    defer hb.deinit();
-                    dvui.label(@src(), "{d} file(s) selected", .{self.files.items.len}, .{ .gravity_y = 0.5 });
-                    if (!running and dvui.button(@src(), "Add files\u{2026}", .{}, .{})) try self.pickFiles();
-                    if (!running and dvui.button(@src(), "Clear", .{}, .{})) self.clearFiles();
+                    {
+                        var hb = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+                        defer hb.deinit();
+                        dvui.label(@src(), "{d} file(s) selected", .{self.files.items.len}, .{ .gravity_y = 0.5 });
+                        if (!running and dvui.button(@src(), "Add files\u{2026}", .{}, .{})) try self.pickFiles();
+                        if (!running and dvui.button(@src(), "Clear", .{}, .{})) self.clearFiles();
+                    }
+                    {
+                        var list = dvui.scrollArea(@src(), .{}, .{
+                            .expand = .horizontal,
+                            .min_size_content = .{ .w = 0, .h = 110 },
+                            .max_size_content = .height(110),
+                            .border = dvui.Rect.all(1),
+                            .background = true,
+                        });
+                        defer list.deinit();
+                        for (self.files.items, 0..) |f, i| {
+                            dvui.label(@src(), "{s}", .{std.fs.path.basename(f)}, .{ .id_extra = i, .expand = .horizontal });
+                        }
+                    }
                 } else {
                     try self.pathRow(@src(), "Input folder", &self.input_buf, "current folder", running, .folder);
                     var hb = dvui.box(@src(), .{ .dir = .horizontal }, .{});
@@ -210,7 +225,7 @@ pub const App = struct {
                     s.failed,
                     if (s.cancelled) "   (cancelled)" else "",
                 }, .{});
-                for (s.warnings.items) |w| dvui.label(@src(), "\u{26a0} {s}", .{w}, .{});
+                for (s.warnings.items, 0..) |w, i| dvui.label(@src(), "! {s}", .{w}, .{ .id_extra = i });
             }
 
             _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 0, .h = 6 } });
@@ -324,7 +339,7 @@ pub const App = struct {
             snap.skipped = s.skipped;
             snap.failed = s.failed;
             snap.cancelled = s.cancelled;
-            for (s.warnings.items) |w| snap.warnings.append(self.gpa, self.gpa.dupe(u8, w) catch continue) catch {};
+            for (s.warnings.items) |w| snap.warnings.append(self.gpa, self.gpa.dupe(u8, asciiFold(job.arena.allocator(), w)) catch continue) catch {};
             self.last_summary = snap;
         }
         if (job.err) |e| self.last_error = self.gpa.dupe(u8, e) catch null;
@@ -375,9 +390,9 @@ const Reporter = struct {
         var line = std.ArrayList(u8).initCapacity(a, 96) catch return;
         line.print(a, "{s} {s}", .{ tag, p.rel }) catch {};
         if (p.status == .failed) line.print(a, ": {s}", .{p.status.failed}) catch {};
-        if (p.label) |l| line.print(a, "  \u{2192} {s}", .{l}) catch {};
+        if (p.label) |l| line.print(a, "  -> {s}", .{asciiFold(a, l)}) catch {};
         line.append(a, '\n') catch {};
-        if (p.note) |n| line.print(a, "      note: {s}\n", .{n}) catch {};
+        if (p.note) |n| line.print(a, "      note: {s}\n", .{asciiFold(a, n)}) catch {};
         job.lines.append(a, line.items) catch {};
         job.done = p.index;
         job.total = p.total;
@@ -419,6 +434,42 @@ const SummarySnapshot = struct {
         self.warnings.deinit(gpa);
     }
 };
+
+/// dvui's default font (Bitstream Vera) lacks the degree sign, primes and the
+/// arrow that resolved labels/notes use. Transliterate them for the log so the
+/// text doesn't turn into tofu; the stamped image itself keeps the real glyphs.
+fn asciiFold(a: std.mem.Allocator, s: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, s, 0xC2) == null and std.mem.indexOfScalar(u8, s, 0xE2) == null) return s;
+    var out: std.ArrayList(u8) = .empty;
+    out.ensureTotalCapacity(a, s.len) catch return s;
+    var i: usize = 0;
+    while (i < s.len) {
+        const rest = s[i..];
+        const pairs = [_]struct { from: []const u8, to: []const u8 }{
+            .{ .from = "\u{00b0}", .to = " deg" }, // °
+            .{ .from = "\u{2032}", .to = "'" }, // ′
+            .{ .from = "\u{2033}", .to = "\"" }, // ″
+            .{ .from = "\u{00b7}", .to = " - " }, // ·
+            .{ .from = "\u{2212}", .to = "-" }, // −
+            .{ .from = "\u{2192}", .to = "->" }, // →
+            .{ .from = "\u{00d7}", .to = "x" }, // ×
+        };
+        var matched = false;
+        for (pairs) |p| {
+            if (std.mem.startsWith(u8, rest, p.from)) {
+                out.appendSlice(a, p.to) catch {};
+                i += p.from.len;
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            out.append(a, s[i]) catch {};
+            i += 1;
+        }
+    }
+    return out.items;
+}
 
 fn sliceBuf(buf: []const u8) []const u8 {
     const z = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;

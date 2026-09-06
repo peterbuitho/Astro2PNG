@@ -44,15 +44,6 @@ pub fn main(init: std.process.Init) !void {
     });
     defer win.deinit();
 
-    // egui/Vera's default font misses arrows, the degree sign and the middot
-    // that object labels and notes use. DejaVu Sans Condensed Bold (the same
-    // font we stamp images with) covers them, so make it the UI font.
-    win.addFont("dejavu", @embedFile("dejavu_font"), null) catch {};
-    const dj = dvui.Font.find(.{ .family = "dejavu" });
-    win.theme.font_body = dj.withSize(win.theme.font_body.size);
-    win.theme.font_heading = dj.withSize(win.theme.font_heading.size);
-    win.theme.font_title = dj.withSize(win.theme.font_title.size);
-
     g_app = App.init(gpa, init.io, &win);
     defer g_app.deinit();
 

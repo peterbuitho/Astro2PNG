@@ -46,7 +46,6 @@ pub fn build(b: *std.Build) void {
             }),
         });
         gui.root_module.addAnonymousImport("icon_png", .{ .root_source_file = b.path("assets/icon-256.png") });
-        gui.root_module.addAnonymousImport("dejavu_font", .{ .root_source_file = b.path("assets/fonts/DejaVuSansCondensed-Bold.ttf") });
         b.installArtifact(gui);
 
         const run_gui = b.addRunArtifact(gui);
