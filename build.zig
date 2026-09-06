@@ -59,6 +59,9 @@ const Ctx = struct {
             .optimize = optimize,
         });
         m.addOptions("build_options", ctx.build_options);
+        m.addAnonymousImport("dejavu_font", .{
+            .root_source_file = ctx.b.path("assets/fonts/DejaVuSansCondensed-Bold.ttf"),
+        });
         return m;
     }
 

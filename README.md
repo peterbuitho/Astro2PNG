@@ -24,16 +24,16 @@ This is an in-progress port. What works today:
 | PNG encode (adaptive filtering, zlib via Zig std) + decode | ✅ |
 | WCS / coordinate parsing (plate solution and mount target, FOV estimate) | ✅ |
 | CLI: folder scan, recursion, explicit file list, `--overwrite`, exit codes | ✅ |
-| `--resize4k` cover-and-crop to 3840×2160 | ⚠️ resizes, but the text **stamp is not drawn yet** |
-| SIMBAD / CDS Sesame online object lookup + Caldwell/nickname catalogues | ⬜ not ported yet |
-| TrueType glyph rasteriser for the corner label | ⬜ not ported yet |
+| `--resize4k` / `--png-only` cover-and-crop to 3840×2160 | ✅ |
+| TrueType glyph rasteriser (`cmap` 4/12, composites, `kern`) + corner stamp | ✅ (white text + drop shadow, two-line, auto-shrink) |
+| `--filename` stamp (file-name stem / header `OBJECT`) | ✅ |
+| SIMBAD / CDS Sesame online object lookup + Caldwell/nickname catalogues | ⬜ not ported yet — the stamp currently shows the file name or header `OBJECT`, never goes online |
 | Desktop GUI | ⬜ not ported yet (see note below) |
 | Windows Explorer / Linux desktop right-click integration | ⬜ not ported yet |
 
 ### Roadmap
 
-1. `ttf.zig` — a small TrueType outline rasteriser, then wire up the
-   bottom-right object-name stamp in `post.zig`.
+1. ~~`ttf.zig` — TrueType rasteriser + corner stamp.~~ ✅
 2. `catalog.zig` + `lookup.zig` — the Caldwell table, ~150 curated nicknames,
    and the CDS Sesame / SIMBAD TAP queries (HTTPS via `std.http.Client`, XML
    and TSV parsing already have a home in `xml.zig`).

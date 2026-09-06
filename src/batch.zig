@@ -106,6 +106,21 @@ pub fn run(
         std.mem.sort([]const u8, files.items, {}, lessCaseInsensitive);
     }
 
+    // One stamper for the whole run, if we will resize/label at all.
+    var font_bytes: ?[]u8 = null;
+    defer if (font_bytes) |fb| gpa.free(fb);
+    var stamper: ?post.Stamper = null;
+    if (opts.resize4kEffective()) {
+        if (opts.font) |font_path| {
+            font_bytes = cwd.readFileAlloc(io, font_path, gpa, Io.Limit.limited(32 << 20)) catch
+                return error.CannotReadFont;
+            stamper = post.Stamper.init(font_bytes.?) catch return error.InvalidFont;
+        } else {
+            stamper = post.Stamper.initBundled();
+        }
+    }
+    const stamper_ptr: ?*const post.Stamper = if (stamper) |*s| s else null;
+
     var summary = Summary{ .total = files.items.len };
 
     for (files.items, 0..) |file, i| {
@@ -131,7 +146,7 @@ pub fn run(
             continue;
         };
 
-        const result = processOne(sa, io, file, dest, opts) catch |err| {
+        const result = processOne(sa, io, file, dest, opts, stamper_ptr) catch |err| {
             summary.failed += 1;
             reporter.report(.{
                 .index = i + 1,
@@ -154,7 +169,7 @@ pub fn run(
     return summary;
 }
 
-fn processOne(a: Allocator, io: Io, src: []const u8, dest: []const u8, opts: *const Options) !Outcome {
+fn processOne(a: Allocator, io: Io, src: []const u8, dest: []const u8, opts: *const Options, stamper: ?*const post.Stamper) !Outcome {
     const cwd = Io.Dir.cwd();
     const is_png = hasExt(src, &[_][]const u8{"png"});
     const in_place = is_png and std.mem.eql(u8, src, dest);
@@ -167,6 +182,7 @@ fn processOne(a: Allocator, io: Io, src: []const u8, dest: []const u8, opts: *co
 
     const bytes = cwd.readFileAlloc(io, src, a, MAX_FILE) catch return error.CannotReadInput;
 
+    var header_object: ?[]const u8 = null;
     var image: img.Image8 = undefined;
     if (is_png) {
         image = try png.decode(a, bytes);
@@ -175,12 +191,24 @@ fn processOne(a: Allocator, io: Io, src: []const u8, dest: []const u8, opts: *co
             try fits.parse(a, bytes)
         else
             try xisf.parse(a, bytes);
+        header_object = data.object;
         image = try pixels.toImage(a, &data);
     }
 
-    if (opts.resize4kEffective()) {
+    var label_title: ?[]const u8 = null;
+    var note: ?[]const u8 = null;
+    if (stamper) |st| {
+        // Until the SIMBAD lookup is ported, the stamp is the file-name stem
+        // (or, when not in --filename mode, the header OBJECT if present).
+        const stem = std.fs.path.stem(dest);
+        const title: []const u8 = if (!opts.lookup)
+            stem
+        else if (header_object) |obj| obj else stem;
+        if (!std.mem.eql(u8, title, stem)) label_title = title;
+        if (opts.lookup) note = "online object lookup not implemented in this build; stamped the header/file name";
+        image = try st.resizeAndLabel(a, &image, .{ .title = title });
+    } else if (opts.resize4kEffective()) {
         image = try post.resizeToFill(a, &image, post.TARGET_WIDTH, post.TARGET_HEIGHT);
-        // TODO: stamp the object label (needs ttf.zig + lookup.zig).
     }
 
     const encoded = try png.encode(a, &image);
@@ -190,7 +218,7 @@ fn processOne(a: Allocator, io: Io, src: []const u8, dest: []const u8, opts: *co
     }
     cwd.writeFile(io, .{ .sub_path = dest, .data = encoded }) catch return error.CannotWriteOutput;
 
-    return .{ .written = true, .note = if (opts.resize4kEffective()) "stamp not implemented in this build" else null };
+    return .{ .written = true, .label = label_title, .note = note };
 }
 
 fn collectFiles(gpa: Allocator, io: Io, dir_path: []const u8, recursive: bool, exts: []const []const u8, out: *std.ArrayList([]const u8)) !void {

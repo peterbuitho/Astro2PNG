@@ -16,6 +16,7 @@ pub const xisf = @import("xisf.zig");
 pub const fits = @import("fits.zig");
 pub const pixels = @import("pixels.zig");
 pub const png = @import("png.zig");
+pub const ttf = @import("ttf.zig");
 pub const post = @import("post.zig");
 pub const batch = @import("batch.zig");
 
@@ -28,6 +29,7 @@ test {
     _ = fits;
     _ = pixels;
     _ = png;
+    _ = ttf;
     _ = post;
     _ = batch;
 }
