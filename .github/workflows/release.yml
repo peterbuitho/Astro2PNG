@@ -154,14 +154,18 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [cli, gui]
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Publish as long as the CLI built; a failing GUI matrix leg (e.g. a new
+    # macOS SDK quirk) still leaves a useful release.
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.cli.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - run: ls -la dist
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           generate_release_notes: true
+          fail_on_unmatched_files: true
