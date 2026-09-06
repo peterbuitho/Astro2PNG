@@ -46,6 +46,8 @@ pub fn build(b: *std.Build) void {
             }),
         });
         gui.root_module.addAnonymousImport("icon_png", .{ .root_source_file = b.path("assets/icon-256.png") });
+        // No console window on Windows when the .exe is double-clicked.
+        if (gui.rootModuleTarget().os.tag == .windows) gui.subsystem = .Windows;
         b.installArtifact(gui);
 
         const run_gui = b.addRunArtifact(gui);

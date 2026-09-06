@@ -11,6 +11,7 @@ const SDLBackend = @import("sdl-backend");
 const engine = @import("astro2png");
 
 const App = @import("app.zig").App;
+const instance = @import("instance.zig");
 
 const icon_png = @embedFile("icon_png");
 
@@ -22,6 +23,16 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const gpa = init.gpa;
+
+    // Command-line paths (Explorer launches one process per selected file).
+    const initial: []const []const u8 = blk: {
+        const args = init.minimal.args.toSlice(init.arena.allocator()) catch break :blk &.{};
+        break :blk if (args.len > 1) args[1..] else &.{};
+    };
+
+    // Single-instance: the first launch owns the window; every later launch
+    // spools its paths and exits.
+    if (!instance.claim(init.io, init.environ_map, initial)) return;
 
     var backend = try SDLBackend.initWindow(.{
         .io = init.io,
@@ -47,11 +58,7 @@ pub fn main(init: std.process.Init) !void {
     g_app = App.init(gpa, init.io, &win);
     defer g_app.deinit();
 
-    // Files / folders passed on the command line.
-    {
-        const args = try init.minimal.args.toSlice(init.arena.allocator());
-        for (args[@min(args.len, 1)..]) |a| g_app.addPath(a);
-    }
+    for (initial) |a| g_app.addPath(a);
 
     const shot_path: ?[]const u8 = init.environ_map.get("A2P_SHOT");
     var frames: u32 = 0;
@@ -61,6 +68,9 @@ pub fn main(init: std.process.Init) !void {
     main_loop: while (window_open) {
         const nstime = win.beginWait(interrupted);
         try win.begin(nstime);
+
+        // Paths spooled by a second instance.
+        instance.poll(init.io, init.environ_map, &g_app);
 
         // Custom event pump so we can pick up file drops, which dvui's SDL3
         // backend does not forward. Everything else goes to dvui as usual.
@@ -80,7 +90,7 @@ pub fn main(init: std.process.Init) !void {
 
         frames += 1;
         if (shot_path) |p| {
-            if (frames == 3) {
+            if (frames == 90) {
                 screenshot(gpa, &backend, p) catch |e| std.log.err("screenshot: {s}", .{@errorName(e)});
                 break :main_loop;
             }
