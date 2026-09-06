@@ -1,0 +1,22 @@
+# Build + test on every push and pull request. The release archives are cut
+# by release.yml on tags.
+
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig build test --summary all
+      - run: zig fmt --check src build.zig
+      - name: Cross-compile every target
+        run: zig build release -Dversion=ci --summary all
