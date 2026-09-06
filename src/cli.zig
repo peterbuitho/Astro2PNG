@@ -102,10 +102,11 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, args: []cons
     const verb: []const u8 = if (opts.png_only) "Processed" else "Converted";
 
     var reporter = Reporter{ .out = out };
-    const summary = batch.run(gpa, io, &opts, &reporter, null) catch |err| {
+    var summary = batch.run(gpa, io, &opts, &reporter, null) catch |err| {
         try out.print("{s}\n", .{@errorName(err)});
         return 2;
     };
+    defer summary.deinit(gpa);
 
     if (summary.total == 0) {
         try out.print("No {s} files found.\n", .{opts.inputKind()});

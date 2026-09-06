@@ -1,8 +1,7 @@
 //! The batch job itself: find files, convert / post-process each one, report
 //! progress. Used by both the CLI and (later) the GUI.
 //!
-//! Port of the Rust `batch.rs`. Online object lookup and the text stamp are
-//! not wired up yet; `--resize4k` currently resizes without the label.
+//! Port of the Rust `batch.rs`.
 
 const std = @import("std");
 const Io = std.Io;
@@ -14,6 +13,8 @@ const pixels = @import("pixels.zig");
 const png = @import("png.zig");
 const post = @import("post.zig");
 const img = @import("image.zig");
+const resolver_mod = @import("resolver.zig");
+const lookup = @import("lookup.zig");
 
 pub const IMAGE_EXTS = [_][]const u8{ "xisf", "fits", "fit", "fts" };
 const FITS_EXTS = [_][]const u8{ "fits", "fit", "fts" };
@@ -65,7 +66,13 @@ pub const Summary = struct {
     skipped: u32 = 0,
     failed: u32 = 0,
     cancelled: bool = false,
+    /// Run-level warnings; each string is owned and freed by `deinit`.
     warnings: std.ArrayList([]const u8) = .empty,
+
+    pub fn deinit(self: *Summary, gpa: Allocator) void {
+        for (self.warnings.items) |w| gpa.free(w);
+        self.warnings.deinit(gpa);
+    }
 };
 
 const Outcome = struct {
@@ -121,6 +128,14 @@ pub fn run(
     }
     const stamper_ptr: ?*const post.Stamper = if (stamper) |*s| s else null;
 
+    // Online object resolver — lives for the whole run so a folder of 300 subs
+    // of one target costs one or two requests.
+    var res_arena = std.heap.ArenaAllocator.init(gpa);
+    defer res_arena.deinit();
+    var resolver = resolver_mod.Resolver.init(gpa, res_arena.allocator(), io, opts.lookup and stamper_ptr != null);
+    defer resolver.deinit();
+    const resolver_ptr: ?*resolver_mod.Resolver = if (opts.lookup and stamper_ptr != null) &resolver else null;
+
     var summary = Summary{ .total = files.items.len };
 
     for (files.items, 0..) |file, i| {
@@ -146,7 +161,7 @@ pub fn run(
             continue;
         };
 
-        const result = processOne(sa, io, file, dest, opts, stamper_ptr) catch |err| {
+        const result = processOne(sa, io, file, dest, opts, stamper_ptr, resolver_ptr) catch |err| {
             summary.failed += 1;
             reporter.report(.{
                 .index = i + 1,
@@ -166,10 +181,17 @@ pub fn run(
         }
     }
 
+    if (resolver_ptr) |rp| {
+        if (rp.failure) |e| {
+            const w = std.fmt.allocPrint(gpa, "Online object lookup unavailable ({s}); file names were stamped instead.", .{e}) catch return summary;
+            summary.warnings.append(gpa, w) catch gpa.free(w);
+        }
+    }
+
     return summary;
 }
 
-fn processOne(a: Allocator, io: Io, src: []const u8, dest: []const u8, opts: *const Options, stamper: ?*const post.Stamper) !Outcome {
+fn processOne(a: Allocator, io: Io, src: []const u8, dest: []const u8, opts: *const Options, stamper: ?*const post.Stamper, resolver: ?*resolver_mod.Resolver) !Outcome {
     const cwd = Io.Dir.cwd();
     const is_png = hasExt(src, &[_][]const u8{"png"});
     const in_place = is_png and std.mem.eql(u8, src, dest);
@@ -183,6 +205,7 @@ fn processOne(a: Allocator, io: Io, src: []const u8, dest: []const u8, opts: *co
     const bytes = cwd.readFileAlloc(io, src, a, MAX_FILE) catch return error.CannotReadInput;
 
     var header_object: ?[]const u8 = null;
+    var coords: ?@import("wcs.zig").SkyCoords = null;
     var image: img.Image8 = undefined;
     if (is_png) {
         image = try png.decode(a, bytes);
@@ -192,21 +215,22 @@ fn processOne(a: Allocator, io: Io, src: []const u8, dest: []const u8, opts: *co
         else
             try xisf.parse(a, bytes);
         header_object = data.object;
+        coords = data.coords;
         image = try pixels.toImage(a, &data);
     }
 
     var label_title: ?[]const u8 = null;
     var note: ?[]const u8 = null;
     if (stamper) |st| {
-        // Until the SIMBAD lookup is ported, the stamp is the file-name stem
-        // (or, when not in --filename mode, the header OBJECT if present).
         const stem = std.fs.path.stem(dest);
-        const title: []const u8 = if (!opts.lookup)
-            stem
-        else if (header_object) |obj| obj else stem;
-        if (!std.mem.eql(u8, title, stem)) label_title = title;
-        if (opts.lookup) note = "online object lookup not implemented in this build; stamped the header/file name";
-        image = try st.resizeAndLabel(a, &image, .{ .title = title });
+        var label = post.Label{ .title = stem };
+        if (resolver) |res| {
+            const id = resolver_mod.identify(res, header_object, coords, stem);
+            label = id.label;
+            note = id.note;
+            if (!std.mem.eql(u8, label.title, stem)) label_title = label.title;
+        }
+        image = try st.resizeAndLabel(a, &image, label);
     } else if (opts.resize4kEffective()) {
         image = try post.resizeToFill(a, &image, post.TARGET_WIDTH, post.TARGET_HEIGHT);
     }

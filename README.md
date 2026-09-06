@@ -26,18 +26,21 @@ This is an in-progress port. What works today:
 | CLI: folder scan, recursion, explicit file list, `--overwrite`, exit codes | ✅ |
 | `--resize4k` / `--png-only` cover-and-crop to 3840×2160 | ✅ |
 | TrueType glyph rasteriser (`cmap` 4/12, composites, `kern`) + corner stamp | ✅ (white text + drop shadow, two-line, auto-shrink) |
-| `--filename` stamp (file-name stem / header `OBJECT`) | ✅ |
-| SIMBAD / CDS Sesame online object lookup + Caldwell/nickname catalogues | ⬜ not ported yet — the stamp currently shows the file name or header `OBJECT`, never goes online |
+| `--filename` stamp (file-name stem) | ✅ |
+| SIMBAD / CDS Sesame online object lookup (HTTPS via Zig std, per-run cache) | ✅ |
+| Caldwell catalogue + ~200 curated nicknames | ✅ |
+| Two-line label composition, header/file-name cross-check, off-centre & paired-object notes, cone-search identification of unnamed frames | ✅ |
+| User names file (`XISF2PNG_NAMES`, per-user config) | ⬜ not ported yet |
 | Desktop GUI | ⬜ not ported yet (see note below) |
 | Windows Explorer / Linux desktop right-click integration | ⬜ not ported yet |
 
 ### Roadmap
 
 1. ~~`ttf.zig` — TrueType rasteriser + corner stamp.~~ ✅
-2. `catalog.zig` + `lookup.zig` — the Caldwell table, ~150 curated nicknames,
-   and the CDS Sesame / SIMBAD TAP queries (HTTPS via `std.http.Client`, XML
-   and TSV parsing already have a home in `xml.zig`).
-3. Desktop GUI. Zig has no mature pure-Zig windowing + GPU stack, so the GUI
+2. ~~`catalog.zig` + `lookup.zig` + `resolver.zig` — Caldwell table, curated
+   nicknames, CDS Sesame / SIMBAD TAP queries, the full `identify` logic.~~ ✅
+3. User names file; macOS `.app` bundle in the release workflow.
+4. Desktop GUI. Zig has no mature pure-Zig windowing + GPU stack, so the GUI
    will use one small C dependency (SDL or GLFW) under a Zig UI layer
    ([`dvui`](https://github.com/david-vanderson/dvui) is the leading
    candidate). The conversion engine (`src/root.zig`) is already GUI-ready.
@@ -77,7 +80,7 @@ given instead of a folder; `.png` files are only resized/stamped.
 | ------------------- | ------- |
 | `-r`, `--recursive` | Recurse into subfolders; the output tree mirrors the input. |
 | `--overwrite`       | Overwrite existing `.png` files (default: skip them). |
-| `--resize4k`        | Scale each PNG (aspect kept) to cover 3840×2160, then centre-crop to exactly 3840×2160. (The object-name stamp is not drawn yet.) |
+| `--resize4k`        | Scale each PNG (aspect kept) to cover 3840×2160, centre-crop to exactly 3840×2160, and stamp the object name bottom-right — identified from the header `OBJECT`, a catalogue id in the file name (`M31`, `NGC_7000`, `Sh2-155`, …) and/or the image coordinates, resolved via CDS Sesame / SIMBAD and cross-checked. Falls back to the file name offline. |
 | `--filename`        | Stamp the plain file name: ignore the header `OBJECT`, never go online. Aliases: `--no-lookup`, `--offline`. |
 | `--png-only`        | Skip XISF/FITS conversion: pick up existing `.png` files and only run the resize step (implies `--resize4k`). |
 | `--font <file>`     | A `.ttf` / `.otf` font file for the stamp. Default: bundled DejaVu Sans Condensed Bold. |
