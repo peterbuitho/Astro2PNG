@@ -46,11 +46,16 @@ const impl = switch (builtin.os.tag) {
 // Linux / XDG
 // ---------------------------------------------------------------------------
 const LinuxImpl = struct {
+    fn env(name: [*:0]const u8) ?[]const u8 {
+        const v = std.c.getenv(name) orelse return null;
+        return std.mem.span(v);
+    }
+
     fn dataHome(buf: []u8) ?[]const u8 {
-        if (std.posix.getenv("XDG_DATA_HOME")) |x| {
+        if (env("XDG_DATA_HOME")) |x| {
             if (x.len != 0 and x[0] == '/') return x;
         }
-        const home = std.posix.getenv("HOME") orelse return null;
+        const home = env("HOME") orelse return null;
         return std.fmt.bufPrint(buf, "{s}/.local/share", .{home}) catch null;
     }
 

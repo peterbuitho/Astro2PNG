@@ -104,6 +104,14 @@ pub const App = struct {
     pub fn frame(self: *App) !void {
         self.pollDrops();
 
+        // Reap a finished worker before drawing anything that touches it.
+        if (self.job) |j| {
+            j.mutex.lock();
+            const done = j.finished;
+            j.mutex.unlock();
+            if (done) self.finishJob(j);
+        }
+
         var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both, .background = true, .style = .window });
         defer scroll.deinit();
 
@@ -219,7 +227,6 @@ pub const App = struct {
                 j.mutex.lock();
                 defer j.mutex.unlock();
                 for (j.lines.items) |line| tl.addText(line, .{});
-                if (j.finished) self.finishJob(j);
             } else if (self.job_lines_snapshot) |snap| {
                 for (snap.items) |line| tl.addText(line, .{});
             }
@@ -305,8 +312,12 @@ pub const App = struct {
         self.job = job;
     }
 
+    /// Called when the worker has signalled `finished`, WITHOUT the lock held.
+    /// The worker thread has stopped touching the job by then (it sets
+    /// `finished` last), and joining makes that a hard guarantee.
     fn finishJob(self: *App, job: *Job) void {
-        // called with job.mutex held
+        job.thread.join();
+
         if (job.summary) |s| {
             var snap = SummarySnapshot{};
             snap.converted = s.converted;
@@ -323,10 +334,7 @@ pub const App = struct {
         for (job.lines.items) |l| snap.append(self.gpa, self.gpa.dupe(u8, l) catch continue) catch {};
         self.job_lines_snapshot = snap;
 
-        job.mutex.unlock();
-        job.thread.join();
-        job.mutex.lock();
-        job.deinit(self.gpa);
+        job.arena.deinit();
         self.gpa.destroy(job);
         self.job = null;
     }
@@ -395,8 +403,7 @@ const Job = struct {
     }
     fn deinit(self: *Job, gpa: std.mem.Allocator) void {
         _ = gpa;
-        if (self.summary) |*s| s.warnings.deinit(self.arena.allocator());
-        self.arena.deinit();
+        self.arena.deinit(); // frees opts, lines, and the summary's warnings
     }
 };
 
