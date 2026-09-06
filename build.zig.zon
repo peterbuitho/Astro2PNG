@@ -1,0 +1,14 @@
+.{
+    .name = .Astro2PNG,
+    .version = "0.1.0",
+    .fingerprint = 0xf84c85d5a5a7613d, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "assets",
+        "README.md",
+    },
+}

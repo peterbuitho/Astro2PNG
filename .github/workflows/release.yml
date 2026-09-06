@@ -1,0 +1,87 @@
+# Cross-compiles the astro2png CLI for Windows, macOS (Intel + Apple Silicon)
+# and Linux (x86-64 + ARM64) and attaches the archives to a GitHub Release.
+#
+# Because the CLI is pure Zig, every target is cross-compiled from a single
+# Linux runner — no per-OS build matrix. Push a tag like `v0.1.0`, or run the
+# workflow manually from the Actions tab to check that all targets still build
+# (archives are uploaded as workflow artifacts; no release is made).
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Cross-compile all targets
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Derive version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "value=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=0.0.0-dev+${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build every target
+        run: zig build release -Dversion=${{ steps.ver.outputs.value }} --summary all
+
+      - name: Package archives
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          declare -A NAMES=(
+            [x86_64-windows]=windows-x86_64
+            [aarch64-windows]=windows-aarch64
+            [x86_64-linux-musl]=linux-x86_64
+            [aarch64-linux-musl]=linux-aarch64
+            [x86_64-macos]=macos-x86_64
+            [aarch64-macos]=macos-aarch64
+          )
+          for triple in "${!NAMES[@]}"; do
+            name="${NAMES[$triple]}"
+            src="zig-out/release/$triple"
+            [[ -f "$src/astro2png" ]] && bin="astro2png" || bin="astro2png.exe"
+            cp README.md "$src/"
+            if [[ "$triple" == *windows* ]]; then
+              (cd "$src" && zip -q "$GITHUB_WORKSPACE/dist/astro2png-$name.zip" "$bin" README.md)
+            else
+              tar -czf "dist/astro2png-$name.tar.gz" -C "$src" "$bin" README.md
+            fi
+          done
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archives
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: archives
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
