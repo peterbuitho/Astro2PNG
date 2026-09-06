@@ -65,12 +65,23 @@ pub fn main(init: std.process.Init) !void {
     const shot_path: ?[]const u8 = init.environ_map.get("A2P_SHOT");
     var frames: u32 = 0;
 
+    const c = SDLBackend.c;
     var interrupted = false;
     main_loop: while (window_open) {
         const nstime = win.beginWait(interrupted);
         try win.begin(nstime);
 
-        try backend.addAllEvents(&win);
+        // Custom event pump so we can pick up file drops, which dvui's SDL3
+        // backend does not forward. Everything else goes to dvui as usual.
+        var event: c.SDL_Event = undefined;
+        while (c.SDL_PollEvent(&event)) {
+            if (event.type == c.SDL_EVENT_DROP_FILE) {
+                if (event.drop.data) |data| g_app.addPath(std.mem.span(data));
+                dvui.refresh(&win, @src(), null);
+            } else {
+                _ = try backend.addEvent(&win, event);
+            }
+        }
 
         g_app.frame() catch |e| std.log.err("frame error: {s}", .{@errorName(e)});
 

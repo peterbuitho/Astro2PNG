@@ -32,7 +32,8 @@ This is an in-progress port. What works today:
 | Two-line label composition, header/file-name cross-check, off-centre & paired-object notes, cone-search identification of unnamed frames | ✅ |
 | Desktop GUI (dvui + SDL3): form, options, worker thread, streaming log, progress, Cancel | ✅ builds & runs on Windows / macOS / Linux |
 | GUI: Windows Explorer right-click / Linux `.desktop` integration | ✅ (registry / XDG) |
-| GUI: drag-and-drop onto the window; single-instance file hand-off | ⬜ not ported yet |
+| GUI: drag files / a folder onto the window | ✅ |
+| GUI: single-instance file hand-off (second launch feeds the running window) | ⬜ not ported yet |
 | User names file (`XISF2PNG_NAMES`, per-user config) | ⬜ not ported yet |
 | Windows Explorer / Linux desktop right-click integration | ⬜ not ported yet |
 
@@ -43,7 +44,7 @@ This is an in-progress port. What works today:
    nicknames, CDS Sesame / SIMBAD TAP queries, the full `identify` logic.~~ ✅
 3. ~~Desktop GUI — dvui + SDL3.~~ ✅ (SDL is the one C dependency; it is built
    from source as a lazy Zig dependency and only pulled in for `-Dgui`.)
-4. GUI drag-and-drop + single-instance hand-off; user names file; polish.
+4. GUI single-instance hand-off; user names file; visual polish.
 
 ## Build from source
 
