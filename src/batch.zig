@@ -21,6 +21,31 @@ const FITS_EXTS = [_][]const u8{ "fits", "fit", "fts" };
 
 const MAX_FILE = Io.Limit.limited(1 << 32); // 4 GiB per input file
 
+/// Tiny spin lock (0.16 dropped `std.Thread.Mutex`). Guards the shared object
+/// resolver and the progress reporter; the heavy per-file work runs outside it.
+const SpinLock = struct {
+    held: std.atomic.Value(bool) = .init(false),
+    fn lock(self: *SpinLock) void {
+        while (self.held.swap(true, .acquire)) std.atomic.spinLoopHint();
+    }
+    fn unlock(self: *SpinLock) void {
+        self.held.store(false, .release);
+    }
+};
+
+/// Worker count for `job_count` files: `Options.concurrency`, or
+/// `min(cpu_count, 8)` when it is zero.
+fn workerCount(requested: usize, job_count: usize) usize {
+    var n = requested;
+    if (n == 0) {
+        n = std.Thread.getCpuCount() catch 1;
+        if (n > 8) n = 8;
+    }
+    if (n < 1) n = 1;
+    if (n > job_count) n = job_count;
+    return n;
+}
+
 pub const Options = struct {
     input_dir: []const u8 = ".",
     output_dir: ?[]const u8 = null,
@@ -31,6 +56,8 @@ pub const Options = struct {
     font: ?[]const u8 = null,
     lookup: bool = false,
     files: std.ArrayList([]const u8) = .empty,
+    /// Files to convert in parallel. `0` means `min(cpu_count, 8)`.
+    concurrency: usize = 0,
 
     pub fn inputKind(self: Options) []const u8 {
         return if (self.png_only) ".png" else ".xisf / .fits";
@@ -137,47 +164,112 @@ pub fn run(
     const resolver_ptr: ?*resolver_mod.Resolver = if (opts.lookup and stamper_ptr != null) &resolver else null;
 
     var summary = Summary{ .total = files.items.len };
+    if (files.items.len == 0) return summary;
 
-    for (files.items, 0..) |file, i| {
-        if (cancel) |cflag| {
-            if (cflag.load(.monotonic)) {
-                summary.cancelled = true;
-                break;
+    // Files are converted in parallel: a pool of worker tasks (one per CPU,
+    // capped at 8) each runs the decode -> stretch -> resize -> stamp -> encode
+    // pipeline. The online object lookup and the progress reporter are the only
+    // things behind the lock, so 300 subs of one target still cost one or two
+    // SIMBAD requests.
+    const R = @TypeOf(reporter);
+    const Ctx = struct {
+        gpa: Allocator,
+        io: Io,
+        opts: *const Options,
+        files: []const []const u8,
+        explicit: bool,
+        stamper: ?*const post.Stamper,
+        resolver: ?*resolver_mod.Resolver,
+        reporter: R,
+        summary: *Summary,
+        cancel: ?*const std.atomic.Value(bool),
+        lock: *SpinLock,
+        next: std.atomic.Value(usize) = .init(0),
+    };
+
+    var lock = SpinLock{};
+    var ctx = Ctx{
+        .gpa = gpa,
+        .io = io,
+        .opts = opts,
+        .files = files.items,
+        .explicit = explicit,
+        .stamper = stamper_ptr,
+        .resolver = resolver_ptr,
+        .reporter = reporter,
+        .summary = &summary,
+        .cancel = cancel,
+        .lock = &lock,
+    };
+
+    const Worker = struct {
+        fn go(c: *Ctx) void {
+            while (true) {
+                if (c.cancel) |cf| {
+                    if (cf.load(.monotonic)) {
+                        c.lock.lock();
+                        c.summary.cancelled = true;
+                        c.lock.unlock();
+                        return;
+                    }
+                }
+                const i = c.next.fetchAdd(1, .monotonic);
+                if (i >= c.files.len) return;
+                const file = c.files[i];
+
+                var scratch = std.heap.ArenaAllocator.init(c.gpa);
+                defer scratch.deinit();
+                const sa = scratch.allocator();
+
+                const rel: []const u8 = if (c.explicit)
+                    std.fs.path.basename(file)
+                else
+                    relativeTo(file, c.opts.input_dir);
+
+                const dest = destPath(sa, c.opts, rel, file, c.explicit) catch {
+                    c.lock.lock();
+                    defer c.lock.unlock();
+                    c.summary.failed += 1;
+                    c.reporter.report(.{ .index = i + 1, .total = c.files.len, .rel = rel, .status = .{ .failed = "cannot compute output path" } });
+                    continue;
+                };
+
+                const result = processOne(sa, c.io, file, dest, c.opts, c.stamper, c.resolver, c.lock) catch |err| {
+                    c.lock.lock();
+                    defer c.lock.unlock();
+                    c.summary.failed += 1;
+                    c.reporter.report(.{ .index = i + 1, .total = c.files.len, .rel = rel, .status = .{ .failed = @errorName(err) } });
+                    continue;
+                };
+
+                c.lock.lock();
+                defer c.lock.unlock();
+                if (result.written) {
+                    c.summary.converted += 1;
+                    c.reporter.report(.{ .index = i + 1, .total = c.files.len, .rel = rel, .status = .ok, .label = result.label, .note = result.note });
+                } else {
+                    c.summary.skipped += 1;
+                    c.reporter.report(.{ .index = i + 1, .total = c.files.len, .rel = rel, .status = .skipped, .note = result.note });
+                }
             }
         }
+    };
 
-        var scratch = std.heap.ArenaAllocator.init(gpa);
-        defer scratch.deinit();
-        const sa = scratch.allocator();
-
-        const rel: []const u8 = if (explicit)
-            std.fs.path.basename(file)
-        else
-            relativeTo(file, opts.input_dir);
-
-        const dest = destPath(sa, opts, rel, file, explicit) catch {
-            summary.failed += 1;
-            reporter.report(.{ .index = i + 1, .total = files.items.len, .rel = rel, .status = .{ .failed = "cannot compute output path" } });
-            continue;
-        };
-
-        const result = processOne(sa, io, file, dest, opts, stamper_ptr, resolver_ptr) catch |err| {
-            summary.failed += 1;
-            reporter.report(.{
-                .index = i + 1,
-                .total = files.items.len,
-                .rel = rel,
-                .status = .{ .failed = @errorName(err) },
-            });
-            continue;
-        };
-
-        if (result.written) {
-            summary.converted += 1;
-            reporter.report(.{ .index = i + 1, .total = files.items.len, .rel = rel, .status = .ok, .label = result.label, .note = result.note });
+    const workers = workerCount(opts.concurrency, files.items.len);
+    if (workers <= 1) {
+        Worker.go(&ctx);
+    } else {
+        var group: Io.Group = .init;
+        var spawned: usize = 0;
+        var w: usize = 0;
+        while (w < workers) : (w += 1) {
+            group.concurrent(io, Worker.go, .{&ctx}) catch break;
+            spawned += 1;
+        }
+        if (spawned == 0) {
+            Worker.go(&ctx); // concurrency unavailable: run inline
         } else {
-            summary.skipped += 1;
-            reporter.report(.{ .index = i + 1, .total = files.items.len, .rel = rel, .status = .skipped, .note = result.note });
+            group.await(io) catch {};
         }
     }
 
@@ -191,7 +283,7 @@ pub fn run(
     return summary;
 }
 
-fn processOne(a: Allocator, io: Io, src: []const u8, dest: []const u8, opts: *const Options, stamper: ?*const post.Stamper, resolver: ?*resolver_mod.Resolver) !Outcome {
+fn processOne(a: Allocator, io: Io, src: []const u8, dest: []const u8, opts: *const Options, stamper: ?*const post.Stamper, resolver: ?*resolver_mod.Resolver, lock: *SpinLock) !Outcome {
     const cwd = Io.Dir.cwd();
     const is_png = hasExt(src, &[_][]const u8{"png"});
     const in_place = is_png and std.mem.eql(u8, src, dest);
@@ -225,7 +317,9 @@ fn processOne(a: Allocator, io: Io, src: []const u8, dest: []const u8, opts: *co
         const stem = std.fs.path.stem(dest);
         var label = post.Label{ .title = stem };
         if (resolver) |res| {
+            lock.lock();
             const id = resolver_mod.identify(res, header_object, coords, stem);
+            lock.unlock();
             label = id.label;
             note = id.note;
             if (!std.mem.eql(u8, label.title, stem)) label_title = label.title;

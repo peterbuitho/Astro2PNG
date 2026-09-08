@@ -79,7 +79,7 @@ zig build release -Dversion=1.2.3
 ## Command line
 
 ```
-astro2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--filename]
+astro2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--filename] [-j N]
 astro2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite] [--filename]
 astro2png <file>... [output_dir] [--overwrite] [--resize4k] [--filename]
 ```
@@ -89,6 +89,13 @@ Every `.xisf`, `.fits`, `.fit` and `.fts` file found is converted. If
 omitted, PNGs are written next to their source files. Explicit files may be
 given instead of a folder; `.png` files are only resized/stamped.
 
+Files are converted **in parallel** on a pool of worker tasks (one per CPU,
+capped at 8, override with `-j`) running on the `std.Io` threaded runtime. The
+heavy work — decode, stretch, resize, stamp, encode — runs concurrently; the
+online object lookup is serialised behind a shared cache, so a folder of 300
+subs of one target still costs only one or two SIMBAD requests. Progress is
+printed in completion order.
+
 | Option              | Meaning |
 | ------------------- | ------- |
 | `-r`, `--recursive` | Recurse into subfolders; the output tree mirrors the input. |
@@ -97,6 +104,7 @@ given instead of a folder; `.png` files are only resized/stamped.
 | `--filename`        | Stamp the plain file name: ignore the header `OBJECT`, never go online. Aliases: `--no-lookup`, `--offline`. |
 | `--png-only`        | Skip XISF/FITS conversion: pick up existing `.png` files and only run the resize step (implies `--resize4k`). |
 | `--font <file>`     | A `.ttf` / `.otf` font file for the stamp. Default: bundled DejaVu Sans Condensed Bold. |
+| `-j`, `--concurrency N` | Convert `N` files in parallel. Default: number of CPUs, capped at 8. |
 | `-V`, `--version`   | Print the version. |
 | `-h`, `--help`      | Show help. |
 

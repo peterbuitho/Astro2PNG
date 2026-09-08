@@ -9,7 +9,7 @@ const usage_text =
     \\astro2png {s} - batch convert XISF and FITS astronomical images to PNG
     \\
     \\Usage:
-    \\  astro2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--filename]
+    \\  astro2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--filename] [-j N]
     \\  astro2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite] [--filename]
     \\  astro2png <file>... [output_dir] [--overwrite] [--resize4k] [--filename]
     \\
@@ -29,6 +29,8 @@ const usage_text =
     \\                     only resize/annotate them (implies --resize4k)
     \\      --font <file>  .ttf/.otf font file for the stamp (default: bundled
     \\                     DejaVu Sans Condensed Bold). Also accepts --font=<file>.
+    \\  -j, --concurrency N  convert N files in parallel
+    \\                     (default: number of CPUs, capped at 8)
     \\  -V, --version     print version
     \\  -h, --help        show this help
     \\
@@ -53,6 +55,23 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, out: *std.Io.Writer, args: []cons
             opts.png_only = true;
         } else if (eq(a, "--filename") or eq(a, "--no-lookup") or eq(a, "--offline")) {
             opts.lookup = false;
+        } else if (eq(a, "-j") or eq(a, "--concurrency")) {
+            i += 1;
+            const n = if (i < args.len) (std.fmt.parseInt(usize, args[i], 10) catch 0) else 0;
+            if (n < 1) {
+                try out.writeAll("-j requires a positive integer\n");
+                try out.print(usage_text, .{engine.VERSION});
+                return 2;
+            }
+            opts.concurrency = n;
+        } else if (std.mem.startsWith(u8, a, "-j")) {
+            const n = std.fmt.parseInt(usize, a[2..], 10) catch 0;
+            if (n < 1) {
+                try out.writeAll("-j requires a positive integer\n");
+                try out.print(usage_text, .{engine.VERSION});
+                return 2;
+            }
+            opts.concurrency = n;
         } else if (eq(a, "--font")) {
             i += 1;
             if (i >= args.len or args[i].len == 0) {
