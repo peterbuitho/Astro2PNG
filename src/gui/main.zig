@@ -60,9 +60,6 @@ pub fn main(init: std.process.Init) !void {
 
     for (initial) |a| g_app.addPath(a);
 
-    const shot_path: ?[]const u8 = init.environ_map.get("A2P_SHOT");
-    var frames: u32 = 0;
-
     const c = SDLBackend.c;
     var interrupted = false;
     main_loop: while (window_open) {
@@ -88,15 +85,6 @@ pub fn main(init: std.process.Init) !void {
 
         const end_micros = try win.end(.{});
 
-        frames += 1;
-        if (shot_path) |p| {
-            if (frames == 90) {
-                screenshot(gpa, &backend, p) catch |e| std.log.err("screenshot: {s}", .{@errorName(e)});
-                break :main_loop;
-            }
-            dvui.refresh(&win, @src(), null);
-        }
-
         const wait_micros = win.waitTime(end_micros);
         interrupted = try backend.waitEventTimeout(wait_micros);
 
@@ -104,37 +92,4 @@ pub fn main(init: std.process.Init) !void {
     }
 
     g_app.requestCancelAndJoin();
-}
-
-/// Debug aid: dump the current SDL back buffer to a PNG (A2P_SHOT=<path>).
-fn screenshot(gpa: std.mem.Allocator, backend: *SDLBackend, path: []const u8) !void {
-    const c = SDLBackend.c;
-    var surface = c.SDL_RenderReadPixels(backend.renderer, null) orelse return error.ReadPixels;
-    defer c.SDL_DestroySurface(surface);
-    if (surface.*.format != c.SDL_PIXELFORMAT_ABGR8888) {
-        surface = c.SDL_ConvertSurface(surface, c.SDL_PIXELFORMAT_ABGR8888) orelse return error.Convert;
-    }
-    const w: u32 = @intCast(surface.*.w);
-    const h: u32 = @intCast(surface.*.h);
-    const src: [*]const u8 = @ptrCast(surface.*.pixels.?);
-    const pitch: usize = @intCast(surface.*.pitch);
-
-    const rgb = try gpa.alloc(u8, @as(usize, w) * h * 3);
-    defer gpa.free(rgb);
-    var y: usize = 0;
-    while (y < h) : (y += 1) {
-        var x: usize = 0;
-        while (x < w) : (x += 1) {
-            const s = src[y * pitch + x * 4 ..];
-            const d = rgb[(y * w + x) * 3 ..];
-            d[0] = s[0];
-            d[1] = s[1];
-            d[2] = s[2];
-        }
-    }
-    var image = engine.image.Image8{ .width = w, .height = h, .channels = 3, .pixels = rgb };
-    const bytes = try engine.png.encode(gpa, &image);
-    defer gpa.free(bytes);
-    try std.Io.Dir.cwd().writeFile(g_app.io, .{ .sub_path = path, .data = bytes });
-    std.log.info("screenshot -> {s} ({d}x{d})", .{ path, w, h });
 }
