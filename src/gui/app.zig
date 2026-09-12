@@ -10,6 +10,13 @@ const shell = @import("shell.zig");
 
 const BUF = 1024;
 
+// Log/status colors, matching the Rust GUI's scheme exactly.
+const color_ok: dvui.Color = .{ .r = 120, .g = 200, .b = 120 };
+const color_skip: dvui.Color = dvui.Color.gray;
+const color_error: dvui.Color = .{ .r = 230, .g = 120, .b = 120 };
+const color_label: dvui.Color = .{ .r = 140, .g = 190, .b = 255 };
+const color_warning: dvui.Color = .{ .r = 235, .g = 180, .b = 90 };
+
 /// Tiny spin lock (0.16 dropped `std.Thread.Mutex`). Critical sections here
 /// only append a string and bump two counters, so spinning is fine.
 const SpinLock = struct {
@@ -49,7 +56,7 @@ pub const App = struct {
     job: ?*Job = null,
     last_summary: ?SummarySnapshot = null,
     last_error: ?[]const u8 = null,
-    job_lines_snapshot: ?std.ArrayList([]const u8) = null,
+    job_lines_snapshot: ?std.ArrayList(LogEntry) = null,
 
     pub fn init(gpa: std.mem.Allocator, io: std.Io, win: *dvui.Window) App {
         return .{
@@ -216,7 +223,7 @@ pub const App = struct {
                 }
             }
 
-            if (self.last_error) |e| dvui.label(@src(), "{s}", .{e}, .{});
+            if (self.last_error) |e| dvui.label(@src(), "{s}", .{e}, .{ .color_text = .{ .color = color_error } });
             if (self.last_summary) |s| {
                 dvui.label(@src(), "{s}: {d}   Skipped: {d}   Failed: {d}{s}", .{
                     if (self.png_only) "Processed" else "Converted",
@@ -224,8 +231,8 @@ pub const App = struct {
                     s.skipped,
                     s.failed,
                     if (s.cancelled) "   (cancelled)" else "",
-                }, .{});
-                for (s.warnings.items, 0..) |w, i| dvui.label(@src(), "! {s}", .{w}, .{ .id_extra = i });
+                }, .{ .color_text = .{ .color = if (s.failed > 0) color_error else dvui.themeGet().text } });
+                for (s.warnings.items, 0..) |w, i| dvui.label(@src(), "! {s}", .{w}, .{ .id_extra = i, .color_text = .{ .color = color_warning } });
             }
 
             _ = dvui.spacer(@src(), .{ .min_size_content = .{ .w = 0, .h = 6 } });
@@ -241,9 +248,9 @@ pub const App = struct {
             if (self.job) |j| {
                 j.mutex.lock();
                 defer j.mutex.unlock();
-                for (j.lines.items) |line| tl.addText(line, .{});
+                for (j.lines.items) |line| addLogEntry(tl, line);
             } else if (self.job_lines_snapshot) |snap| {
-                for (snap.items) |line| tl.addText(line, .{});
+                for (snap.items) |line| addLogEntry(tl, line);
             }
         }
     }
@@ -300,7 +307,7 @@ pub const App = struct {
         if (self.last_error) |e| self.gpa.free(e);
         self.last_error = null;
         if (self.job_lines_snapshot) |*snap| {
-            for (snap.items) |l| self.gpa.free(l);
+            for (snap.items) |l| l.free(self.gpa);
             snap.deinit(self.gpa);
             self.job_lines_snapshot = null;
         }
@@ -345,8 +352,8 @@ pub const App = struct {
         if (job.err) |e| self.last_error = self.gpa.dupe(u8, e) catch null;
 
         // Keep the log visible after the job goes away.
-        var snap: std.ArrayList([]const u8) = .empty;
-        for (job.lines.items) |l| snap.append(self.gpa, self.gpa.dupe(u8, l) catch continue) catch {};
+        var snap: std.ArrayList(LogEntry) = .empty;
+        for (job.lines.items) |l| snap.append(self.gpa, l.dupe(self.gpa) catch continue) catch {};
         self.job_lines_snapshot = snap;
 
         job.arena.deinit();
@@ -373,6 +380,41 @@ fn workerMain(job: *Job, io: std.Io, win: *dvui.Window) void {
     dvui.refresh(win, @src(), null);
 }
 
+/// One log entry, kept structured (rather than a single formatted string) so
+/// the UI can color the tag/label/note independently of the plain text,
+/// matching the Rust GUI's log coloring.
+const LogEntry = struct {
+    status: batch.Status,
+    rel: []const u8,
+    label: ?[]const u8 = null,
+    note: ?[]const u8 = null,
+
+    /// Deep-copies all owned strings with `a`, for moving an entry between
+    /// allocators (job arena -> gpa snapshot, or vice versa).
+    fn dupe(self: LogEntry, a: std.mem.Allocator) !LogEntry {
+        return .{
+            .status = switch (self.status) {
+                .ok => .ok,
+                .skipped => .skipped,
+                .failed => |m| .{ .failed = try a.dupe(u8, m) },
+            },
+            .rel = try a.dupe(u8, self.rel),
+            .label = if (self.label) |l| try a.dupe(u8, l) else null,
+            .note = if (self.note) |n| try a.dupe(u8, n) else null,
+        };
+    }
+
+    fn free(self: LogEntry, a: std.mem.Allocator) void {
+        switch (self.status) {
+            .failed => |m| a.free(m),
+            else => {},
+        }
+        a.free(self.rel);
+        if (self.label) |l| a.free(l);
+        if (self.note) |n| a.free(n);
+    }
+};
+
 const Reporter = struct {
     job: *Job,
     win: *dvui.Window,
@@ -382,18 +424,20 @@ const Reporter = struct {
         job.mutex.lock();
         defer job.mutex.unlock();
         const a = job.arena.allocator();
-        const tag: []const u8 = switch (p.status) {
-            .ok => "OK   ",
-            .skipped => "SKIP ",
-            .failed => "ERROR",
+        // asciiFold returns its input unchanged when there's nothing to
+        // fold, which may be a transient FFI-owned buffer -- dupe
+        // whatever it returns so the arena always owns an independent copy.
+        const status: batch.Status = switch (p.status) {
+            .ok => .ok,
+            .skipped => .skipped,
+            .failed => |m| .{ .failed = a.dupe(u8, m) catch m },
         };
-        var line = std.ArrayList(u8).initCapacity(a, 96) catch return;
-        line.print(a, "{s} {s}", .{ tag, p.rel }) catch {};
-        if (p.status == .failed) line.print(a, ": {s}", .{p.status.failed}) catch {};
-        if (p.label) |l| line.print(a, "  -> {s}", .{asciiFold(a, l)}) catch {};
-        line.append(a, '\n') catch {};
-        if (p.note) |n| line.print(a, "      note: {s}\n", .{asciiFold(a, n)}) catch {};
-        job.lines.append(a, line.items) catch {};
+        job.lines.append(a, .{
+            .status = status,
+            .rel = a.dupe(u8, p.rel) catch p.rel,
+            .label = if (p.label) |l| (a.dupe(u8, asciiFold(a, l)) catch null) else null,
+            .note = if (p.note) |n| (a.dupe(u8, asciiFold(a, n)) catch null) else null,
+        }) catch {};
         job.done = p.index;
         job.total = p.total;
         dvui.refresh(self.win, @src(), null);
@@ -406,7 +450,7 @@ const Job = struct {
     thread: std.Thread = undefined,
     cancel: std.atomic.Value(bool) = .init(false),
     mutex: SpinLock = .{},
-    lines: std.ArrayList([]const u8) = .empty,
+    lines: std.ArrayList(LogEntry) = .empty,
     done: usize = 0,
     total: usize = 0,
     finished: bool = false,
@@ -434,6 +478,38 @@ const SummarySnapshot = struct {
         self.warnings.deinit(gpa);
     }
 };
+
+/// Renders one log entry as colored text segments, matching the Rust GUI's
+/// log coloring (green OK / gray SKIP / red ERROR / blue label / amber note).
+fn addLogEntry(tl: *dvui.TextLayoutWidget, entry: LogEntry) void {
+    const tag: []const u8 = switch (entry.status) {
+        .ok => "OK   ",
+        .skipped => "SKIP ",
+        .failed => "ERROR",
+    };
+    const tag_color: dvui.Color = switch (entry.status) {
+        .ok => color_ok,
+        .skipped => color_skip,
+        .failed => color_error,
+    };
+    tl.addText(tag, .{ .color_text = .{ .color = tag_color } });
+    tl.addText(" ", .{});
+    tl.addText(entry.rel, .{});
+    if (entry.status == .failed) {
+        tl.addText(": ", .{});
+        tl.addText(entry.status.failed, .{ .color_text = .{ .color = color_error } });
+    }
+    if (entry.label) |l| {
+        tl.addText("  -> ", .{});
+        tl.addText(l, .{ .color_text = .{ .color = color_label } });
+    }
+    tl.addText("\n", .{});
+    if (entry.note) |n| {
+        tl.addText("      note: ", .{});
+        tl.addText(n, .{ .color_text = .{ .color = color_warning } });
+        tl.addText("\n", .{});
+    }
+}
 
 /// dvui's default font (Bitstream Vera) lacks the degree sign, primes and the
 /// arrow that resolved labels/notes use. Transliterate them for the log so the
