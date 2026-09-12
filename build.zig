@@ -56,26 +56,13 @@ pub fn build(b: *std.Build) void {
         b.step("run-gui", "Build and run the desktop GUI").dependOn(&run_gui.step);
     }
 
-    // --- Cross-platform release archives -------------------------------
-    // A pure-Zig CLI cross-compiles from one runner, so a single job emits
-    // every platform's binary into zig-out/release/<triple>/.
-    const release_step = b.step("release", "Cross-compile release binaries for all platforms");
-    const triples = [_][]const u8{
-        "x86_64-windows",
-        "aarch64-windows",
-        "x86_64-linux-musl",
-        "aarch64-linux-musl",
-        "x86_64-macos",
-        "aarch64-macos",
-    };
-    for (triples) |triple| {
-        const rt = b.resolveTargetQuery(std.Target.Query.parse(.{ .arch_os_abi = triple }) catch unreachable);
-        const rexe = ctx.exe(rt, .ReleaseFast);
-        const install = b.addInstallArtifact(rexe, .{
-            .dest_dir = .{ .override = .{ .custom = b.fmt("release/{s}", .{triple}) } },
-        });
-        release_step.dependOn(&install.step);
-    }
+    // Release builds are now native-per-target (see .github/workflows/
+    // release.yml): astropng-core is a Rust static library built for the
+    // running machine's target, so the previous single-job, six-triple
+    // cross-compile (which needed no C/Rust toolchain at all) no longer
+    // applies. `zig build -Doptimize=ReleaseFast` on each release runner
+    // produces that runner's native binary via the `cli`/`gui` artifacts
+    // installed above.
 }
 
 const Ctx = struct {
@@ -90,9 +77,13 @@ const Ctx = struct {
             .optimize = optimize,
         });
         m.addOptions("build_options", ctx.build_options);
-        m.addAnonymousImport("dejavu_font", .{
-            .root_source_file = ctx.b.path("assets/fonts/DejaVuSansCondensed-Bold.ttf"),
-        });
+        m.addIncludePath(ctx.b.path("third_party/astropng-core/include"));
+        m.addLibraryPath(ctx.b.path("third_party/astropng-core/lib"));
+        m.linkSystemLibrary("astropng_core", .{});
+        m.link_libc = true;
+        // Rust's default panic=unwind needs libunwind's _Unwind_* symbols;
+        // gcc normally links this automatically, but Zig's linker doesn't.
+        if (target.result.os.tag != .windows) m.linkSystemLibrary("unwind", .{});
         return m;
     }
 

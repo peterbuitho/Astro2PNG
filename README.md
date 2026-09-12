@@ -2,9 +2,10 @@
 
 Batch-convert **XISF** (PixInsight) and **FITS** astronomical images to
 **PNG**, optionally resized to 4K with the object's name and catalogue info
-stamped in the corner. A pure-[Zig](https://ziglang.org) port of
-[`xisf2png`](https://github.com/peterbuitho/xisf2png) — no C dependencies, no
-runtime dependencies, cross-compiled to every desktop platform from one build.
+stamped in the corner. A [Zig](https://ziglang.org) CLI/GUI on top of
+[`astropng-core`](https://github.com/peterbuitho/astropng-core) — see
+[Architecture](#architecture) — a shared conversion pipeline also used by
+this program's Rust/Go/Scala ports.
 
 Each image's full data range is linearly scaled to 0–255 (a plain min/max
 stretch — no STF/MTF astronomical stretch). Only the first image in a file is
@@ -12,50 +13,34 @@ converted. Mono and RGB images are supported.
 
 ## Status
 
-This is an in-progress port. What works today:
+Feature parity with the original for both the CLI and the GUI (all format
+parsing, stretch, resize/stamp, lookup and catalogue logic now lives in
+`astropng-core`, not in this repo). Not yet ported: the single-instance file
+hand-off and the optional user names file.
 
-| Area | State |
-| --- | --- |
-| XISF reader (mono/RGB, UInt8/16/32/64, Float32/64, planar & interleaved, little/big-endian) | ✅ |
-| XISF data location `attachment` / `embedded` / `inline` (base64, hex) | ✅ |
-| XISF compression `zlib`, `lz4`, `lz4hc`, `zstd`, with/without byte-shuffle | ✅ |
-| FITS reader (BITPIX 8/16/32/64/−32/−64, NAXIS 2 or 3, BZERO/BSCALE, ROWORDER) | ✅ |
-| Linear min/max stretch to 8-bit | ✅ |
-| PNG encode (adaptive filtering, zlib via Zig std) + decode | ✅ |
-| WCS / coordinate parsing (plate solution and mount target, FOV estimate) | ✅ |
-| CLI: folder scan, recursion, explicit file list, `--overwrite`, exit codes | ✅ |
-| `--resize4k` / `--png-only` cover-and-crop to 3840×2160 | ✅ |
-| TrueType glyph rasteriser (`cmap` 4/12, composites, `kern`) + corner stamp | ✅ (white text + drop shadow, two-line, auto-shrink) |
-| `--filename` stamp (file-name stem) | ✅ |
-| SIMBAD / CDS Sesame online object lookup (HTTPS via Zig std, per-run cache) | ✅ |
-| Caldwell catalogue + ~200 curated nicknames | ✅ |
-| Two-line label composition, header/file-name cross-check, off-centre & paired-object notes, cone-search identification of unnamed frames | ✅ |
-| Desktop GUI (dvui + SDL3): form, options, worker thread, streaming log, progress, Cancel | ✅ builds & runs on Windows / macOS / Linux |
-| GUI: Windows Explorer right-click / Linux `.desktop` integration | ✅ (registry / XDG) |
-| GUI: drag files / a folder onto the window | ✅ |
-| GUI: single-instance file hand-off (second launch feeds the running window) | ⬜ not ported yet |
-| User names file (`XISF2PNG_NAMES`, per-user config) | ⬜ not ported yet |
-| Windows Explorer / Linux desktop right-click integration | ⬜ not ported yet |
+## Architecture
 
-### Roadmap
-
-1. ~~`ttf.zig` — TrueType rasteriser + corner stamp.~~ ✅
-2. ~~`catalog.zig` + `lookup.zig` + `resolver.zig` — Caldwell table, curated
-   nicknames, CDS Sesame / SIMBAD TAP queries, the full `identify` logic.~~ ✅
-3. ~~Desktop GUI — dvui + SDL3.~~ ✅ (SDL is the one C dependency; it is built
-   from source as a lazy Zig dependency and only pulled in for `-Dgui`.)
-4. GUI single-instance hand-off; user names file; visual polish.
+The conversion pipeline (XISF/FITS parsing, stretch, resize/stamp, WCS,
+SIMBAD lookup, batch orchestration) lives in
+[`astropng-core`](https://github.com/peterbuitho/astropng-core), a Rust
+library shared with this program's Rust/Go/Scala ports. `src/batch.zig` is a
+thin FFI wrapper around its C ABI, using Zig's built-in C header translator
+(`@cImport`) directly on the vendored header — see
+`third_party/astropng-core/VERSION` for the pinned version and
+`scripts/build-core.sh` for how it's built. `src/cli.zig` and `src/gui/` are
+unaware of the swap; they only ever called `batch.zig`'s public API.
 
 ## Build from source
 
-Requires [Zig 0.16.0](https://ziglang.org/download/). No C toolchain, no
-system libraries.
+Requires [Zig 0.16.0](https://ziglang.org/download/) and a
+[Rust toolchain](https://rustup.rs) (to build `astropng-core`).
 
 ```
-zig build                 # debug build -> zig-out/bin/astro2png
+bash scripts/build-core.sh   # builds third_party/astropng-core/lib/libastropng_core.a
+zig build                    # debug build -> zig-out/bin/astro2png
 zig build -Doptimize=ReleaseFast
 zig build run -- --help
-zig build test            # unit tests
+zig build test                # unit tests
 ```
 
 The desktop GUI is opt-in (it links SDL3, built from source as a lazy
@@ -70,12 +55,6 @@ On Linux the GUI build needs a few X11/Wayland/GL development headers
 (`libx11-dev libxext-dev libwayland-dev libxkbcommon-dev libgl1-mesa-dev` on
 Debian/Ubuntu).
 
-Cross-compile every release target into `zig-out/release/<triple>/`:
-
-```
-zig build release -Dversion=1.2.3
-```
-
 ## Command line
 
 ```
@@ -89,12 +68,11 @@ Every `.xisf`, `.fits`, `.fit` and `.fts` file found is converted. If
 omitted, PNGs are written next to their source files. Explicit files may be
 given instead of a folder; `.png` files are only resized/stamped.
 
-Files are converted **in parallel** on a pool of worker tasks (one per CPU,
-capped at 8, override with `-j`) running on the `std.Io` threaded runtime. The
-heavy work — decode, stretch, resize, stamp, encode — runs concurrently; the
-online object lookup is serialised behind a shared cache, so a folder of 300
-subs of one target still costs only one or two SIMBAD requests. Progress is
-printed in completion order.
+Files are converted **in parallel** (one worker per CPU, capped at 8,
+override with `-j`) by `astropng-core`. The online object lookup is
+serialised behind a shared cache, so a folder of 300 subs of one target still
+costs only one or two SIMBAD requests. Progress is printed in completion
+order.
 
 | Option              | Meaning |
 | ------------------- | ------- |
@@ -113,12 +91,12 @@ Exit code is `1` if any file failed, `2` for a usage error, `0` otherwise.
 
 ## Releases
 
-Prebuilt binaries for Windows, macOS (Intel + Apple Silicon) and Linux
-(x86-64 + ARM64) are attached to each
-[GitHub Release](https://github.com/peterbuitho/Astro2PNG/releases), built by
-[`.github/workflows/release.yml`](.github/workflows/release.yml). Because the
-CLI is pure Zig, all six binaries are cross-compiled from a single Linux
-runner. To cut a release, push a tag:
+Prebuilt binaries for Windows, Linux (x86-64 + ARM64) and macOS are attached
+to each [GitHub Release](https://github.com/peterbuitho/Astro2PNG/releases),
+built natively per target by
+[`.github/workflows/release.yml`](.github/workflows/release.yml) (native
+builds are required now that both the CLI and GUI link `astropng-core` as a
+native library). To cut a release, push a tag:
 
 ```
 git tag v0.1.0
@@ -128,5 +106,6 @@ git push origin v0.1.0
 ## Credits
 
 Port of [`xisf2png`](https://github.com/peterbuitho/xisf2png) by peterbuitho.
-The bundled stamp font, DejaVu Sans Condensed Bold, keeps its own licence
-([`assets/fonts/LICENSE-DejaVu.txt`](assets/fonts/LICENSE-DejaVu.txt)).
+The bundled stamp font, DejaVu Sans Condensed Bold, is embedded in
+`astropng-core`; its licence is in
+[`astropng-core/assets/fonts/LICENSE-DejaVu.txt`](https://github.com/peterbuitho/astropng-core/blob/main/assets/fonts/LICENSE-DejaVu.txt).

@@ -1,6 +1,11 @@
-# Builds the astro2png CLI (all six targets, cross-compiled from one Linux
-# runner) and the astro2png-gui desktop app (native per-OS matrix, because it
-# links SDL3) and attaches the archives to a GitHub Release.
+# Builds the astro2png CLI and astro2png-gui desktop app natively on
+# Windows, Linux (x86-64 + ARM64) and macOS, and attaches the archives to a
+# GitHub Release. Both now link astropng-core
+# (github.com/peterbuitho/astropng-core, pinned in
+# third_party/astropng-core/VERSION) as a native static library, which is
+# why this builds natively per target instead of cross-compiling the CLI
+# from one runner as before (Zig's own cross-compiler has nothing to cross-
+# compile astropng-core's Rust build for).
 #
 # Push a tag like `v0.1.0`, or run the workflow manually from the Actions tab
 # to check that all targets still build (archives are uploaded as workflow
@@ -30,46 +35,8 @@ jobs:
             echo "value=0.0.0-dev+${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
           fi
 
-  cli:
-    name: CLI — cross-compile all targets
-    needs: version
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-      - run: zig build release -Dversion=${{ needs.version.outputs.value }} --summary all
-      - name: Package CLI archives
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          declare -A NAMES=(
-            [x86_64-windows]=windows-x86_64
-            [aarch64-windows]=windows-aarch64
-            [x86_64-linux-musl]=linux-x86_64
-            [aarch64-linux-musl]=linux-aarch64
-            [x86_64-macos]=macos-x86_64
-            [aarch64-macos]=macos-aarch64
-          )
-          for triple in "${!NAMES[@]}"; do
-            name="${NAMES[$triple]}"; src="zig-out/release/$triple"
-            [[ -f "$src/astro2png" ]] && bin="astro2png" || bin="astro2png.exe"
-            cp README.md "$src/"
-            if [[ "$triple" == *windows* ]]; then
-              (cd "$src" && zip -q "$GITHUB_WORKSPACE/dist/astro2png-cli-$name.zip" "$bin" README.md)
-            else
-              tar -czf "dist/astro2png-cli-$name.tar.gz" -C "$src" "$bin" README.md
-            fi
-          done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cli
-          path: dist/*
-          if-no-files-found: error
-
-  gui:
-    name: GUI — ${{ matrix.name }}
+  build:
+    name: ${{ matrix.name }}
     needs: version
     strategy:
       fail-fast: false
@@ -77,6 +44,7 @@ jobs:
         include:
           - { name: windows-x86_64, os: windows-latest }
           - { name: linux-x86_64, os: ubuntu-24.04 }
+          - { name: linux-aarch64, os: ubuntu-24.04-arm }
           - { name: macos-universal, os: macos-latest }
     runs-on: ${{ matrix.os }}
     steps:
@@ -84,6 +52,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Linux GUI build deps
         if: runner.os == 'Linux'
@@ -92,11 +61,30 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libx11-dev libxext-dev libwayland-dev libxkbcommon-dev libgl1-mesa-dev
 
-      - name: Build GUI
+      - name: Build astropng-core
         shell: bash
+        run: bash scripts/build-core.sh
+
+      - name: Build CLI
+        run: zig build -Doptimize=ReleaseFast -Dversion=${{ needs.version.outputs.value }} --summary all
+
+      - name: Build GUI
         run: zig build -Dgui -Doptimize=ReleaseFast -Dversion=${{ needs.version.outputs.value }} --summary all
 
-      - name: Package (Windows / Linux)
+      - name: Package CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          bin="zig-out/bin/astro2png"; [[ -f "$bin.exe" ]] && bin="$bin.exe"
+          cp README.md "$(dirname "$bin")/"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            (cd "$(dirname "$bin")" && 7z a "$GITHUB_WORKSPACE/dist/astro2png-cli-${{ matrix.name }}.zip" "$(basename "$bin")" README.md)
+          else
+            tar -czf "dist/astro2png-cli-${{ matrix.name }}.tar.gz" -C "$(dirname "$bin")" "$(basename "$bin")" README.md
+          fi
+
+      - name: Package GUI (Windows / Linux)
         if: runner.os != 'macOS'
         shell: bash
         run: |
@@ -108,7 +96,7 @@ jobs:
             tar -czf "dist/astro2png-gui-${{ matrix.name }}.tar.gz" -C zig-out/bin astro2png-gui -C "$GITHUB_WORKSPACE" README.md
           fi
 
-      - name: Package (macOS .app)
+      - name: Package GUI (macOS .app)
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
@@ -147,16 +135,14 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gui-${{ matrix.name }}
+          name: ${{ matrix.name }}
           path: dist/*
           if-no-files-found: error
 
   release:
     name: Publish GitHub Release
-    needs: [cli, gui]
-    # Publish as long as the CLI built; a failing GUI matrix leg (e.g. a new
-    # macOS SDK quirk) still leaves a useful release.
-    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.cli.result == 'success' }}
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4

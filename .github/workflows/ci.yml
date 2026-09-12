@@ -16,10 +16,12 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - uses: dtolnay/rust-toolchain@stable
+      - run: bash scripts/build-core.sh
       - run: zig build test --summary all
       - run: zig fmt --check src build.zig
-      - name: Cross-compile every CLI target
-        run: zig build release -Dversion=ci --summary all
+      - name: Build the CLI (native)
+        run: zig build -Doptimize=ReleaseFast --summary all
 
   gui:
     runs-on: ubuntu-24.04
@@ -28,6 +30,8 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - uses: dtolnay/rust-toolchain@stable
+      - run: bash scripts/build-core.sh
       - name: GUI build deps
         run: |
           sudo apt-get update

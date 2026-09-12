@@ -2,3 +2,4 @@
 zig-out/
 /dist/
 zig-pkg/
+/third_party/astropng-core/lib/
