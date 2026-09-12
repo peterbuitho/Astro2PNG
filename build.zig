@@ -82,8 +82,16 @@ const Ctx = struct {
         m.linkSystemLibrary("astropng_core", .{});
         m.link_libc = true;
         // Rust's default panic=unwind needs libunwind's _Unwind_* symbols;
-        // gcc normally links this automatically, but Zig's linker doesn't.
-        if (target.result.os.tag != .windows) m.linkSystemLibrary("unwind", .{});
+        // gcc/link.exe normally link this automatically, but Zig's linker
+        // doesn't. astropng-core's ureq/std also pull in several Win32
+        // libraries that a plain `cc`-driven link would add implicitly.
+        m.linkSystemLibrary("unwind", .{});
+        if (target.result.os.tag == .windows) {
+            m.linkSystemLibrary("ws2_32", .{}); // sockets (ureq)
+            m.linkSystemLibrary("userenv", .{}); // GetUserProfileDirectoryW (std)
+            m.linkSystemLibrary("bcrypt", .{}); // BCryptGenRandom (getrandom)
+            m.linkSystemLibrary("ntdll", .{});
+        }
         return m;
     }
 
