@@ -135,6 +135,36 @@ jobs:
           (cd dist && zip -r -y "astro2png-gui-macos-universal.zip" astro2png.app README.md)
           rm -rf dist/astro2png.app dist/README.md
 
+      - name: Build AppImage
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          curl -fsSL -o /tmp/linuxdeploy "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+          chmod +x /tmp/appimagetool /tmp/linuxdeploy
+
+          appdir="$(mktemp -d)/AppDir"
+          mkdir -p "$appdir/usr/bin"
+          cp zig-out/bin/astro2png-gui "$appdir/usr/bin/astro2png-gui"
+          cp assets/icon-256.png "$appdir/astro2png.png"
+          cat > "$appdir/astro2png-gui.desktop" <<EOF
+          [Desktop Entry]
+          Type=Application
+          Name=Astro2PNG
+          Exec=astro2png-gui
+          Icon=astro2png
+          Categories=Graphics;
+          EOF
+
+          # No FUSE on GitHub-hosted runners; these tools extract-and-run themselves instead of mounting.
+          /tmp/linuxdeploy --appimage-extract-and-run \
+            --appdir "$appdir" \
+            --executable "$appdir/usr/bin/astro2png-gui" \
+            --desktop-file "$appdir/astro2png-gui.desktop" \
+            --icon-file "$appdir/astro2png.png"
+          /tmp/appimagetool --appimage-extract-and-run "$appdir" "dist/astro2png-gui-${{ matrix.name }}.AppImage"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
