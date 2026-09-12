@@ -25,6 +25,7 @@ mkdir -p "$lib_dir"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
     echo "Building astropng-core@$tag (release, universal macOS)"
+    rustup target add x86_64-apple-darwin aarch64-apple-darwin
     (cd "$cache_dir" && cargo build --release --lib --target x86_64-apple-darwin)
     (cd "$cache_dir" && cargo build --release --lib --target aarch64-apple-darwin)
     lipo -create -output "$lib_dir/libastropng_core.a" \

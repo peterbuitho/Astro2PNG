@@ -66,9 +66,11 @@ jobs:
         run: bash scripts/build-core.sh
 
       - name: Build CLI
+        shell: bash
         run: zig build -Doptimize=ReleaseFast -Dversion=${{ needs.version.outputs.value }} --summary all
 
       - name: Build GUI
+        shell: bash
         run: zig build -Dgui -Doptimize=ReleaseFast -Dversion=${{ needs.version.outputs.value }} --summary all
 
       - name: Package CLI
