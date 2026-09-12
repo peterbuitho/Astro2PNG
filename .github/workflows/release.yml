@@ -157,12 +157,65 @@ jobs:
           Categories=Graphics;
           EOF
 
+          # Defense in depth: the binary is otherwise fully static (only
+          # libc/libm are real link-time deps), so linuxdeploy won't bundle
+          # any of this today, but exclude it anyway in case that ever
+          # changes -- bundling GTK/X11/Wayland libs is a well-known
+          # AppImage crash source (ABI conflicts with the desktop session's
+          # own copies).
           # No FUSE on GitHub-hosted runners; these tools extract-and-run themselves instead of mounting.
           /tmp/linuxdeploy --appimage-extract-and-run \
             --appdir "$appdir" \
             --executable "$appdir/usr/bin/astro2png-gui" \
             --desktop-file "$appdir/astro2png-gui.desktop" \
-            --icon-file "$appdir/astro2png.png"
+            --icon-file "$appdir/astro2png.png" \
+            --exclude-library='libgtk-3*' \
+            --exclude-library='libgdk-3*' \
+            --exclude-library='libgdk_pixbuf*' \
+            --exclude-library='libglib-2.0*' \
+            --exclude-library='libgobject-2.0*' \
+            --exclude-library='libgio-2.0*' \
+            --exclude-library='libgmodule-2.0*' \
+            --exclude-library='libpango*' \
+            --exclude-library='libcairo*' \
+            --exclude-library='libatk*' \
+            --exclude-library='libatspi*' \
+            --exclude-library='libharfbuzz*' \
+            --exclude-library='libfontconfig*' \
+            --exclude-library='libfreetype*' \
+            --exclude-library='libX11*' \
+            --exclude-library='libXext*' \
+            --exclude-library='libXi*' \
+            --exclude-library='libXfixes*' \
+            --exclude-library='libXrender*' \
+            --exclude-library='libXcursor*' \
+            --exclude-library='libXdamage*' \
+            --exclude-library='libXcomposite*' \
+            --exclude-library='libXrandr*' \
+            --exclude-library='libXinerama*' \
+            --exclude-library='libxcb*' \
+            --exclude-library='libwayland*' \
+            --exclude-library='libdecor*' \
+            --exclude-library='libepoxy*'
+
+          # The actual crash fix: SDL3's Wayland backend uses libdecor for
+          # window decorations, which dynamically loads a GTK3 plugin
+          # (libdecor-gtk.so) at runtime to theme the title bar -- an
+          # actively-tracked upstream SDL/libdecor crash source
+          # (libsdl-org/SDL#12273, #7311, #5952, #8185). Force X11 (via
+          # XWayland, present on essentially every Wayland desktop) so SDL
+          # never touches Wayland/libdecor/GTK at all. Overrides
+          # linuxdeploy's auto-generated AppRun (a plain symlink to the
+          # executable) with a script that sets this first.
+          rm -f "$appdir/AppRun"
+          cat > "$appdir/AppRun" <<'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          export SDL_VIDEODRIVER=x11
+          exec "$HERE/usr/bin/astro2png-gui" "$@"
+          EOF
+          chmod +x "$appdir/AppRun"
+
           /tmp/appimagetool --appimage-extract-and-run "$appdir" "dist/astro2png-gui-${{ matrix.name }}.AppImage"
 
       - uses: actions/upload-artifact@v4
